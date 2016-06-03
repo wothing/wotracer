@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"sourcegraph.com/sourcegraph/appdash"
 	"sourcegraph.com/sourcegraph/appdash/traceapp"
@@ -12,45 +13,15 @@ import (
 )
 
 func main() {
-	// Create a default InfluxDB configuration
-	conf, err := appdash.NewInfluxDBConfig()
-	if err != nil {
-		log.Fatalf("failed to create influxdb config, error: %v", err)
+	// Create memory store for the internal data storage, and evicting
+	// data after 10 minutes
+	memStore := appdash.NewMemoryStore()
+	store := &appdash.RecentStore{
+		MinEvictAge: 10 * time.Minute,
+		DeleteStore: memStore,
 	}
 
-	// Enable InfluxDB server HTTP basic auth
-	conf.Server.HTTPD.AuthEnabled = true
-	conf.AdminUser = appdash.InfluxDBAdminUser{
-		Username: "17mei",
-		Password: "wothing1708",
-	}
-
-	conf.Server.ReportingDisabled = true
-	conf.Server.Admin.BindAddress = ":8083"
-	conf.Server.BindAddress = ":8088"
-
-	store, err := appdash.NewInfluxDBStore(conf)
-	if err != nil {
-		log.Fatalf("failed to create influxdb store, error: %v", err)
-	}
-	defer func() {
-		if err := store.Close(); err != nil {
-			log.Fatalf("fail to close store, error: %v", err)
-		}
-	}()
-
-	l, err := net.Listen("tcp", ":1726")
-	if err != nil {
-		log.Fatalf("fail to listen to port, error: %v", err)
-	}
-
-	log.Infof("AppDash collector listening on :1726")
-	cs := appdash.NewServer(l, appdash.NewLocalCollector(store))
-	cs.Debug = true
-	cs.Trace = true
-
-	go cs.Start()
-
+	// Start the Appdash web UI on port 8700
 	url, err := url.Parse("http://localhost:8700")
 	if err != nil {
 		log.Fatalf("failed to parsing url, error: %v", err)
@@ -60,8 +31,22 @@ func main() {
 		log.Fatalf("failed to create trace app, error: %v", err)
 	}
 	tapp.Store = store
-	tapp.Queryer = store
-	tapp.Aggregator = store
+	tapp.Queryer = memStore
+
 	log.Infof("AppDash web UI running on HTTP :8700")
-	log.Fatal(http.ListenAndServe(":8700", tapp))
+	go func() {
+		log.Fatal(http.ListenAndServe(":8700", tapp))
+	}()
+
+	// Start the Appdash trace collector server on port 1726
+	l, err := net.Listen("tcp", ":1726")
+	if err != nil {
+		log.Fatalf("fail to listen to port, error: %v", err)
+	}
+
+	log.Infof("AppDash collector listening on :1726")
+	cs := appdash.NewServer(l, appdash.NewLocalCollector(store))
+	cs.Debug = false
+	cs.Trace = false
+	cs.Start()
 }
