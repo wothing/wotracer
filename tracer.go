@@ -1,52 +1,67 @@
-package main
+/**
+ * Copyright 2015-2016, Wothing Co., Ltd.
+ * All rights reserved.
+ *
+ * Created by Elvizlai on 2016/06/06 10:01
+ */
+
+package wotracer
 
 import (
-	"net"
-	"net/http"
-	"net/url"
-	"time"
+	"fmt"
+
+	"golang.org/x/net/context"
+	"google.golang.org/grpc/metadata"
+
+	"github.com/opentracing/basictracer-go"
+	"github.com/opentracing/opentracing-go"
 
 	"sourcegraph.com/sourcegraph/appdash"
-	"sourcegraph.com/sourcegraph/appdash/traceapp"
+	apptracer "sourcegraph.com/sourcegraph/appdash/opentracing"
 
-	"github.com/wothing/log"
+	"github.com/wothing/wotracer/helper"
 )
 
-func main() {
-	// Create memory store for the internal data storage, and evicting
-	// data after 10 minutes
-	memStore := appdash.NewMemoryStore()
-	store := &appdash.RecentStore{
-		MinEvictAge: 10 * time.Minute,
-		DeleteStore: memStore,
-	}
+var tracer opentracing.Tracer
 
-	// Start the Appdash web UI on port 8700
-	url, err := url.Parse("http://localhost:8700")
-	if err != nil {
-		log.Fatalf("failed to parsing url, error: %v", err)
-	}
-	tapp, err := traceapp.New(nil, url)
-	if err != nil {
-		log.Fatalf("failed to create trace app, error: %v", err)
-	}
-	tapp.Store = store
-	tapp.Queryer = memStore
+// InjectTracer MUST be run before all other func
+func InitTracer(address string) {
+	collector := appdash.NewRemoteCollector(address)
+	tracer = apptracer.NewTracer(collector)
+	opentracing.InitGlobalTracer(tracer)
+}
 
-	log.Infof("AppDash web UI running on HTTP :8700")
-	go func() {
-		log.Fatal(http.ListenAndServe(":8700", tapp))
-	}()
+// InjectRPC starts and returns a Span with `operationName`, using
+// any Span found within `ctx` as a parent. If no such parent could be found,
+// StartSpanFromContext creates a root (parentless) Span.
+func InjectRPC(ctx context.Context, operationName string) (opentracing.Span, context.Context) {
+	span, ctx := opentracing.StartSpanFromContext(ctx, operationName)
+	return span, PackCtx(ctx)
+}
 
-	// Start the Appdash trace collector server on port 1726
-	l, err := net.Listen("tcp", ":1726")
-	if err != nil {
-		log.Fatalf("fail to listen to port, error: %v", err)
+// JoinRPC returns the `Span` previously associated with `ctx`, or
+// `nil` if no such `Span` could be found.
+func JoinRPC(ctx context.Context, operationName string) (opentracing.Span, context.Context) {
+	md, ok := metadata.FromContext(ctx)
+	if !ok {
+		// TODO log warn, but nothing we can do
 	}
+	ctx = helper.FromGRPCRequest(tracer, operationName)(ctx, &md)
+	return opentracing.SpanFromContext(ctx), ctx
+}
 
-	log.Infof("AppDash collector listening on :1726")
-	cs := appdash.NewServer(l, appdash.NewLocalCollector(store))
-	cs.Debug = false
-	cs.Trace = false
-	cs.Start()
+// PackCtx pack usual context to grpc context using metadata
+func PackCtx(ctx context.Context) context.Context {
+	md := metadata.Pairs()
+	helper.ToGRPCRequest(tracer)(ctx, &md)
+
+	return metadata.NewContext(
+		ctx,
+		md,
+	)
+}
+
+// GetTraceID returns TraceID with given span
+func GetTraceID(span opentracing.Span) string {
+	return fmt.Sprintf("%016x", span.(basictracer.Span).Context().TraceID)
 }
