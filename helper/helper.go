@@ -25,7 +25,7 @@ func ToGRPCRequest(tracer opentracing.Tracer) func(ctx context.Context, md *meta
 	return func(ctx context.Context, md *metadata.MD) context.Context {
 		if span := opentracing.SpanFromContext(ctx); span != nil {
 			// There's nothing we can do with an error here.
-			if err := tracer.Inject(span, opentracing.TextMap, metadataReaderWriter{md}); err != nil {
+			if err := tracer.Inject(span, opentracing.TextMap, metadataCarrier{md}); err != nil {
 				//logger.Log("err", err)
 			}
 		}
@@ -42,7 +42,7 @@ func ToGRPCRequest(tracer opentracing.Tracer) func(ctx context.Context, md *meta
 // The logger is used to report errors and may be nil.
 func FromGRPCRequest(tracer opentracing.Tracer, operationName string) func(ctx context.Context, md *metadata.MD) context.Context {
 	return func(ctx context.Context, md *metadata.MD) context.Context {
-		span, err := tracer.Join(operationName, opentracing.TextMap, metadataReaderWriter{md})
+		span, err := tracer.Join(operationName, opentracing.TextMap, metadataCarrier{md})
 		if err != nil {
 			span = tracer.StartSpan(operationName)
 			if err != opentracing.ErrTraceNotFound {
@@ -55,11 +55,11 @@ func FromGRPCRequest(tracer opentracing.Tracer, operationName string) func(ctx c
 
 // A type that conforms to opentracing.TextMapReader and
 // opentracing.TextMapWriter.
-type metadataReaderWriter struct {
+type metadataCarrier struct {
 	*metadata.MD
 }
 
-func (w metadataReaderWriter) Set(key, val string) {
+func (w metadataCarrier) Set(key, val string) {
 	key = strings.ToLower(key)
 	if strings.HasSuffix(key, "-bin") {
 		val = string(base64.StdEncoding.EncodeToString([]byte(val)))
@@ -67,7 +67,7 @@ func (w metadataReaderWriter) Set(key, val string) {
 	(*w.MD)[key] = append((*w.MD)[key], val)
 }
 
-func (w metadataReaderWriter) ForeachKey(handler func(key, val string) error) error {
+func (w metadataCarrier) ForeachKey(handler func(key, val string) error) error {
 	for k, vals := range *w.MD {
 		for _, v := range vals {
 			if err := handler(k, v); err != nil {
